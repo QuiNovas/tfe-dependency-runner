@@ -12,15 +12,17 @@ from os import environ
 BASE_TFE_API_URL = 'https://app.terraform.io/api/v2'
 CURRENT_STATE_VERSION_API_URL = BASE_TFE_API_URL + '/workspaces/{}/current-state-version'
 SHOW_WORKSPACE_API_URL = BASE_TFE_API_URL + '/organizations/{}/workspaces/{}'
-CREATE_RUN_URL = BASE_TFE_API_URL + '/runs'
+CREATE_RUN_API_URL = BASE_TFE_API_URL + '/runs'
 CONFIG_PATTERN = re.compile('^config\.[0-9]*\.name')
 API_REQUEST_HEADERS = {
   'Authorization': 'Bearer {}'.format(environ['API_TOKEN']),
   'Content-Type': 'application/vnd.api+json'
 }
 WORKSPACE_DEPENDENCIES_TABLE = boto3.resource('dynamodb').Table(environ['WORKSPACE_DEPENDENCIES_TABLE'])
-WORKSPACE_ID_NAME = 'workspace_id'
-REMOTE_WORKSPACE_IDS_NAME = 'remote_workspace_ids'
+ORGANIZATION_FIELD = 'organization'
+WORKSPACE_FIELD = 'workspace'
+WORKSPACE_ID_FIELD = 'workspace_id'
+REMOTE_WORKSPACES_FIELD = 'remote_workspaces'
 
 
 logger = logging.getLogger()
@@ -33,23 +35,27 @@ def handler(event, context):
     if hmac.new(environ['NOTIFICATION_TOKEN'], body, sha512).hexdigest() != event['headers'].get('X-TFE-Notification-Signature'):
       logger.warning('Invalid token: {}'.format(event['headers'].get('X-TFE-Notification-Signature')))
       return {
-        'statusCode': 400,
-        'body': 'Invalid or missing X-TFE-Notification-Signature header'
+        'statusCode': requests.codes.bad_request,
+        'body': 'Invalid or missing X-TFE-Notification-Signature header {}'.format(event['headers'].get('X-TFE-Notification-Signature')),
       }
   notification_body = json.loads(body)
   for notification in notification_body['notifications']:
     if notification['trigger'] == 'run:completed':
-      workspace_id = notification_body[WORKSPACE_ID_NAME]
-      logger.info('Run completed notification received for {}'.format(workspace_id))
-      remote_workspace_ids = get_remote_workspace_ids(workspace_id)
-      register_workspace_dependencies(workspace_id, remote_workspace_ids)
-      run_dependent_workspaces(workspace_id, context.function_name)
-      break
+      organization = notification_body[ORGANIZATION_FIELD]
+      workspace = notification_body[WORKSPACE_FIELD]
+      logger.info('Run completed notification received for {}/{}'.format(organization, workspace))
+      remote_workspaces = _get_remote_workspaces(notification_body[WORKSPACE_ID_FIELD])
+      _register_workspace_dependencies(organization, workspace, remote_workspaces)
+      _run_dependent_workspaces(organization, workspace, context.function_name)
+      return {
+        'statusCode': requests.codes.accepted,
+        'body': 'Registered and running dependencies for {}/{}'.format(organization, workspace),
+      }
   return {
-    'statusCode': 204
+    'statusCode': requests.codes.ok,
   }
 
-def get_remote_workspace_ids(workspace_id):
+def _get_remote_workspaces(workspace_id):
   logger.info('Getting wokspace info for {}'.format(workspace_id))
   response = requests.get(
     CURRENT_STATE_VERSION_API_URL.format(workspace_id), 
@@ -61,7 +67,7 @@ def get_remote_workspace_ids(workspace_id):
   response = requests.get(current_state_version['data']['attributes']['hosted-state-download-url'])
   response.raise_for_status()
   state = response.json()
-  remote_workspace_ids = []
+  remote_workspaces = set()
   for module in state['modules']:
     for key, value in module['resources'].items():
       if key.startswith('data.terraform_remote_state.') and \
@@ -69,68 +75,84 @@ def get_remote_workspace_ids(workspace_id):
           value['primary']['attributes']['backend'] == 'atlas':
         for key2, value2 in value['primary']['attributes']:
           if CONFIG_PATTERN.match(key2):
-            elements = value2.split('/')
-            response = requests.get(
-              SHOW_WORKSPACE_API_URL.format(elements[0], elements[1]), 
-              headers=API_REQUEST_HEADERS
-            )
-            response.raise_for_status()
-            remote_workspace_ids.append(response['data']['id'])
+            remote_workspaces.add(key2)
             break
-  return remote_workspace_ids
+  return remote_workspaces
 
 
-def register_workspace_dependencies(workspace_id, remote_workspace_ids):
+def _register_workspace_dependencies(organization, workspace, remote_workspaces):
   logger.info(
-    'Registering remote workspace ids {} for workspace {}'.format(
-      remote_workspace_ids, 
-      workspace_id
+    'Registering remote workspaces {} for workspace {}/{}'.format(
+      remote_workspaces, 
+      organization,
+      workspace
     )
   )
   WORKSPACE_DEPENDENCIES_TABLE.put_item(
     Item={
-      WORKSPACE_ID_NAME: workspace_id,
-      REMOTE_WORKSPACE_IDS_NAME: set(remote_workspace_ids),
+      ORGANIZATION_FIELD: organization,
+      WORKSPACE_FIELD: workspace,
+      REMOTE_WORKSPACES_FIELD: remote_workspaces,
     }
   )
 
-def run_dependent_workspaces(workspace_id, function_name, exclusive_start_key=None):
-  logger.info('Scanning for dependent workspaces for workspace {}'.format(workspace_id))
+def _run_dependent_workspaces(organization, workspace, function_name, exclusive_start_key=None):
+  logger.info('Scanning for dependent workspaces for workspace {}/{}'.format(organization, workspace))
   response = WORKSPACE_DEPENDENCIES_TABLE.scan(
     ExclusiveStartKey=exclusive_start_key,
-    FilterExpression=Attr(REMOTE_WORKSPACE_IDS_NAME).contains(workspace_id),
+    ProjectionExpression='{},{}'.format(ORGANIZATION_FIELD, WORKSPACE_FIELD),
+    FilterExpression=Attr(REMOTE_WORKSPACES_FIELD).contains('{}/{}'.format(organization, workspace)),
     ConsistentRead=True,
   )
   if 'Items' in response:
     for item in response['Items']:
-      run_dependent_workspace(item[WORKSPACE_ID_NAME], function_name)
+      _run_dependent_workspace(item[ORGANIZATION_FIELD], item[WORKSPACE_FIELD], function_name)
   if 'LastEvaluatedKey' in response:
-    run_dependent_workspaces(workspace_id, exclusive_start_key=response['LastEvaluatedKey'])
+    _run_dependent_workspaces(organization, workspace, function_name, exclusive_start_key=response['LastEvaluatedKey'])
 
-def run_dependent_workspace(workspace_id, function_name):
-  logger.info('Creating run for workspace {}'.format(workspace_id))
-  response = requests.post(
-    CREATE_RUN_URL, 
-    headers=API_REQUEST_HEADERS,
-    data={
-      'data': {
-        'attributes': {
-          'message': 'Queued automatically from {}'.format(function_name),
-        },
-        'relationships': {
-          'workspace': {
-            'data': {
-              'type': 'workspaces',
-              'id': workspace_id,
+def _run_dependent_workspace(organization, workspace, function_name):
+  logger.info('Creating run for workspace {}/{}'.format(organization, workspace))
+  workspace_response = requests.get(
+    SHOW_WORKSPACE_API_URL.format(organization, workspace),
+    headers=API_REQUEST_HEADERS
+  )
+  if workspace_response.status_code == requests.codes.ok:
+    run_response = requests.post(
+      CREATE_RUN_API_URL, 
+      headers=API_REQUEST_HEADERS,
+      data={
+        'data': {
+          'attributes': {
+            'message': 'Queued automatically from {}'.format(function_name),
+          },
+          'relationships': {
+            'workspace': {
+              'data': {
+                'type': 'workspaces',
+                'id': workspace_response['data']['id'],
+              },
             },
           },
         },
-      },
-    }
-  )
-  if response.status_code != requests.codes.created:
+      }
+    )
+    if run_response.status_code != requests.codes.created:
+      logger.warning(
+        'Failed to create run for workspace {}/{}, code {}, message {}'.format(
+          organization, workspace, run_response.status_code, json.dumps(run_response.json)
+        )
+      )
+  elif workspace_response.status_code == requests.codes.not_found:
+    logger.info('Workspace {}/{} does not exist, deleteing'.format(organization, workspace))
+    WORKSPACE_DEPENDENCIES_TABLE.delete_item(
+      Key={
+        ORGANIZATION_FIELD: organization,
+        WORKSPACE_FIELD: workspace
+      }
+    )
+  else:
     logger.warning(
-      'Failed to create run for workspace {}, code {}, message {}'.format(
-        workspace_id, response.status_code, json.dumps(response.json)
+      'Failed to get Workspace ID for workspace {}/{}, code {}, message {}'.format(
+          organization, workspace, workspace_response.status_code, workspace_response.text
       )
     )

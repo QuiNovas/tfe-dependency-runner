@@ -1,5 +1,5 @@
 ============================
-tfe-dependency-manager
+tfe-dependency-runner
 ============================
 
 .. _APL2: http://www.apache.org/licenses/LICENSE-2.0.txt
@@ -21,17 +21,22 @@ is received:
 #. We get the current state version
 #. We retrieve the actual state file
 #. We parse the state file, looking for any declared *terraform_remote_state* objects
-#. We retrieve the *workspace_id* for any *terraform_remote_state* that are of type *atlas*
-#. We register the found dependencies for the current *workspace_id*
-#. Finally, if there are any TFE workspaces that depend upon the notified workspace, we create runs
+#. We retrieve the *organization/workspace* for any *terraform_remote_state* that are of type *atlas*
+#. We register the found dependencies for the current *workspace*
+#. If there are any TFE workspaces that depend upon the notified workspace, we create runs
+#. If we are not longer able to get the *workspace_id* for an *organization/workspace*, we remove the *organization/workspace* from the dependencies table
 
 Required AWS Resources
 ----------------------
-#. API Gateway
-#. DynamoDB Table
+API Gateway
+  Provides Lambda Proxy events to this function
+DynamoDB Table
+  Where the dependency map is stored. Must have a partition key called
+  ``orgainzation`` and a range key called ``workspace``
 
 Required Permissions
 --------------------
+- dynamodb:DeleteItem
 - dynamodb:PutItem
 - dynamodb:Scan
 
@@ -52,7 +57,6 @@ Environment Variables
 Known Limitations
 -----------------
 - If a run fails to create, there is no retry. Currently we only warn in the logs.
-- If a workspace that has been previously mapped is deleted, it must be manually deleted from the table.
 - Recursive remote state dependencies will cause endless runs if the apply is automatic. You should probably never do either of these things...
 
 License: `APL2`_
