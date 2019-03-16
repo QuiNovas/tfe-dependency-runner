@@ -142,7 +142,7 @@ def _run_dependent_workspaces(organization, workspace, exclusive_start_key=None)
     for item in response['Items']:
       _run_dependent_workspace(item[ORGANIZATION_FIELD], item[WORKSPACE_FIELD], '{}/{}'.format(organization, workspace))
   if 'LastEvaluatedKey' in response:
-    _run_dependent_workspaces(organization, workspace, function_name, exclusive_start_key=response['LastEvaluatedKey'])
+    _run_dependent_workspaces(organization, workspace, exclusive_start_key=response['LastEvaluatedKey'])
 
 def _run_dependent_workspace(organization, workspace, originating_workspace):
   workspace_response = requests.get(
