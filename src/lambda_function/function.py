@@ -13,7 +13,6 @@ BASE_TFE_API_URL = 'https://app.terraform.io/api/v2'
 CURRENT_STATE_VERSION_API_URL = BASE_TFE_API_URL + '/workspaces/{}/current-state-version'
 SHOW_WORKSPACE_API_URL = BASE_TFE_API_URL + '/organizations/{}/workspaces/{}'
 CREATE_RUN_API_URL = BASE_TFE_API_URL + '/runs'
-CONFIG_PATTERN = re.compile('^config\.[0-9]*\.name')
 API_REQUEST_HEADERS = {
   'Authorization': 'Bearer {}'.format(environ['API_TOKEN']),
   'Content-Type': 'application/vnd.api+json'
@@ -87,15 +86,12 @@ def _get_remote_workspaces(workspace_id):
   response.raise_for_status()
   state = response.json()
   remote_workspaces = set()
-  for module in state['modules']:
-    for key, value in module['resources'].items():
-      if key.startswith('data.terraform_remote_state.') and \
-        value['type'] == 'terraform_remote_state' and \
-          value['primary']['attributes']['backend'] == 'atlas':
-        for key2, value2 in value['primary']['attributes'].items():
-          if CONFIG_PATTERN.match(key2):
-            remote_workspaces.add(value2)
-            break
+  for resource in state['resources']:
+    if resource['type'] == 'terraform_remote_state':
+      for instance in resource['instances']:
+        if instance['attributes']['backend'] == 'atlas':
+          remote_workspaces.add(instance['attributes']['config']['value']['name'])
+          break
   return remote_workspaces
 
 

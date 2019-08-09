@@ -58,5 +58,5 @@ Known Limitations
 -----------------
 - If a run fails to create, there is no retry. Currently we only warn in the logs.
 - Recursive remote state dependencies will cause endless runs if the apply is automatic. You should probably never do either of these things...
-
+- Not compatible with TF versions < 0.12
 License: `APL2`_
