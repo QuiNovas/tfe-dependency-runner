@@ -13,7 +13,6 @@ BASE_TFE_API_URL = 'https://app.terraform.io/api/v2'
 CURRENT_STATE_VERSION_API_URL = BASE_TFE_API_URL + '/workspaces/{}/current-state-version'
 SHOW_WORKSPACE_API_URL = BASE_TFE_API_URL + '/organizations/{}/workspaces/{}'
 CREATE_RUN_API_URL = BASE_TFE_API_URL + '/runs'
-CONFIG_PATTERN = re.compile('^config\.[0-9]*\.name')
 API_REQUEST_HEADERS = {
   'Authorization': 'Bearer {}'.format(environ['API_TOKEN']),
   'Content-Type': 'application/vnd.api+json'
