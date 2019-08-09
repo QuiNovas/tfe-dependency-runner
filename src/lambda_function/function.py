@@ -87,15 +87,12 @@ def _get_remote_workspaces(workspace_id):
   response.raise_for_status()
   state = response.json()
   remote_workspaces = set()
-  for module in state['modules']:
-    for key, value in module['resources'].items():
-      if key.startswith('data.terraform_remote_state.') and \
-        value['type'] == 'terraform_remote_state' and \
-          value['primary']['attributes']['backend'] == 'atlas':
-        for key2, value2 in value['primary']['attributes'].items():
-          if CONFIG_PATTERN.match(key2):
-            remote_workspaces.add(value2)
-            break
+  for resource in state['resources']:
+    if resource['type'] == 'terraform_remote_state':
+      for instance in resource['instances']:
+        if instance['attributes']['backend'] == 'atlas':
+          remote_workspaces.add(instance['attributes']['config']['value']['name'])
+          break
   return remote_workspaces
 
 
