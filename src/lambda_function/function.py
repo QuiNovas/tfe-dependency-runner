@@ -89,8 +89,8 @@ def _get_remote_workspaces(workspace_id):
   for resource in state['resources']:
     if resource['type'] == 'terraform_remote_state':
       for instance in resource['instances']:
-        if instance['attributes']['backend'] == 'atlas':
-          remote_workspaces.add(instance['attributes']['config']['value']['name'])
+        if instance['attributes']['backend'] == 'remote':
+          remote_workspaces.add(instance['attributes']['config']['value']['workspaces']['name'])
           break
   return remote_workspaces
 
